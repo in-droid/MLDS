@@ -1,0 +1,122 @@
+---
+title: "Bayesian Inference"
+author: "Ivan Nikolov"
+date: "17/5/2042"
+output: pdf_document
+---
+lib
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r imports}
+library(ggplot2)
+library(rstanarm)
+library(rstan)
+library(bayesplot)
+library(bayestestR)
+#library(see)
+#library(parameters)
+set.seed(42)
+```
+
+## Including Plots
+
+
+
+```{r read_data, echo=FALSE}
+df <- read.csv('./data/dataset.csv', header = TRUE)
+df
+```
+
+```{r standardize_data}
+df$Angle <- (df$Angle - mean(df$Angle)) / sd(df$Angle)
+df$Distance <- (df$Distance - mean(df$Distance)) / sd(df$Distance)
+```
+
+After standardizing the data, we like to choose priors for our model. For the distance, I my prior thinking is that a larger distance will likely negatively affect the shot made. For that I chose a normal distribution with a mean -1 and a stardard deviation 2.5 (the default from the package).
+
+For the angle I also think that a larger angle will likely negatively affect the shot made, but to a lesset extent than the distance. For that I chose a normal distribution with a mean -0.5 and a stardard deviation 2.5 (the default from the package).
+
+```{r priors}
+priors <- list(
+  normal(-1, 2.5),          # Prior for Angle coefficient
+  normal(-0.5, 2.5)          # Prior for Distance coefficient with negative mean
+)
+```
+
+```{r model}
+priors <- normal(location=c(-1, -0.5),
+                 scale= c(2.5, 2.5)
+)
+
+
+basket_lg <- rstanarm::stan_glm(
+  Made ~ Angle + Distance,
+  df,
+  family = binomial(link = "logit"),
+  prior = priors,
+  iter = 10000,
+  chain = 4
+)
+samples <- extract(basket_lg$stanfit)
+paste("We have obtained: ", length(samples$alpha), " samples")
+prior_summary(basket_lg) #priors used
+parameters(basket_lg) #parameters summary
+```
+
+```{r posterior}
+mcmc_dens(basket_lg)
+```
+
+```{r posterior_plots}
+ggplot(data = data.frame(x=samples$beta[,2], y=samples$beta[,1]), aes(x = x, y=y)) +
+  geom_point(size=0.1) +
+  ggtitle('Scatter plot of values for betas')+
+  xlab("Distance")+
+  ylab("Angle")+
+  coord_fixed()+
+  xlim(-1,0)+
+  ylim(-0.5,0.5)+
+  geom_density2d() +
+  geom_hline(yintercept = mean(samples$beta[,1]), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = mean(samples$beta[,2]), linetype = "dashed", color = "red")
+  
+```
+
+
+```{r plots}
+mean_x <- mean(samples$beta[,2])
+mean_y <- mean(samples$beta[,1])
+
+ggplot(data = data.frame(x=samples$beta[,2], y=samples$beta[,1]), aes(x = x, y=y)) +
+  geom_point(size=0.1) +
+  #ggtitle('Scatter plot of values for betas') +
+  xlab("x - Distance") +
+  ylab("y - Angle") +
+  coord_fixed() +
+  xlim(-1,0) +
+  ylim(-0.5,0.5) +
+  geom_density2d() +
+  geom_hline(yintercept = mean_y, linetype = "dashed", color = "red") +
+  geom_text(data = data.frame(x = mean_x, y = mean_y), aes(x = 0, y = y+0.04, label = paste("y =", round(y, 2))), 
+            vjust = 0, hjust = 0.9, color = "red") +
+  geom_vline(xintercept = mean_x, linetype = "dashed", color = "red") +
+  geom_text(data = data.frame(x = mean_x, y = mean_y), aes(x = x+0.04, y = -0.5, label = paste("x =", round(x, 2))), 
+            vjust = 0, hjust = 0, color = "red")
+```
+```{r Q1}
+mean(abs(samples$beta[,2]) - abs(samples$beta[,1]) > 0.001)
+```
+```{r posteriors positive negative}
+plot(p_direction(basket_lg))
+
+```
+```{r Q2}
+mean(samples$beta[,1] < 0)
+```
+```{r Q2}
+mean(samples$beta[,1] > 0)
+```
+

@@ -1,0 +1,433 @@
+---
+title: "Loss estimation"
+output: pdf_document
+date: "2024-03-21"
+author: "Ivan Nikolov"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+
+
+```{r, echo=FALSE}
+toy_data <- function(n, seed = NULL) {
+set.seed(seed)
+x <- matrix(rnorm(8 * n), ncol = 8)
+z <- 0.4 * x[,1] - 0.5 * x[,2] + 1.75 * x[,3] - 0.2 * x[,4] + x[,5]
+y <- runif(n) > 1 / (1 + exp(-z))
+return (data.frame(x = x, y = y))
+}
+log_loss <- function(y, p) {
+-(y * log(p) + (1 - y) * log(1 - p))
+}
+```
+
+```{r get_preds, echo=FALSE}
+get_preds <- function(h, test) {
+  preds <- predict(h, newdata = test, type="response")
+  return(preds)
+}
+
+calculate_risk <- function(y, preds) {
+  risk <- log_loss(y, preds)
+  risk <- unlist(risk)
+  risk[is.nan(risk)] <- 0
+  return(risk)
+}
+
+get_dgp_risk <- function(h) {
+  preds_dgp <- get_preds(h, df_dgp)
+  risk_dgp <- calculate_risk(df_dgp$y, preds_dgp)
+  return(risk_dgp)
+}
+
+```
+
+## A proxy for true risk
+Q: How did I determine that 100000 is enough to reduce the error to the 3rd decimal digit?
+
+```{r proxy, echo}
+sample_set <- toy_data(100, 0)
+df_dgp_1 <- toy_data(100000, 1)
+h_test <- glm(y~ ., data=sample_set, family = binomial())
+
+loss_estimate <- log_loss(df_dgp_1$y, get_preds(h_test, df_dgp_1))
+
+sd_risk <- sd(loss_estimate) / sqrt(1e5)
+sd_risk
+(mean(loss_estimate) + 1.96 * sd_risk) - (mean(loss_estimate) - 1.96 * sd_risk)
+
+```
+By the strong law of large numbers the sample average of a risk from a given dataset will converge to the true value.
+By the central limit theorem the error of the risk (our loss function) will be normally distributed with standard deviation $\sqrt n$ smaller than the standard deviation of the sample.
+If we calculate the difference between the 2.5th percentile and 97.5th percentile, we can see that the difference is only at the third decimal.
+
+
+```{r dgp, echo=FALSE}
+df_dgp <- toy_data(100000, 0)
+```
+
+## Holdout estimation
+### Model loss estimator variability due to test data variability
+
+```{r holdout_split, echo=FALSE}
+
+holdout_split <- function(dataframe, p=0.7, seed=NULL) {
+  set.seed(seed)
+  n <- nrow(dataframe)
+  train_inidices <- sample(1:n, floor(p * n), replace = FALSE)
+  test_indices <- setdiff(1:n, train_inidices)
+  train <- dataframe[train_inidices, ]
+  test <- dataframe[test_indices,]
+  
+  return(list(train = train, test = test))
+}
+
+```
+
+
+
+
+
+```{r train_model, echo=FALSE}
+train_50 <- toy_data(50, seed=10)
+h <- glm(y ~ ., data = train_50, family = binomial(link = "logit"))
+```
+
+
+```{r test_set_var, echo=FALSE}
+
+
+
+risk_dgp <- get_dgp_risk(h)
+risk_dgp <- mean(risk_dgp)
+
+risks_test_set <- data.frame()
+risks_test_set <- data.frame(mean_risk = numeric(1000), std_risk = numeric(1000))
+
+predictor_50_50 <- log_loss(1, 0.5)
+
+
+
+for (i in 1:1000) {
+  test_50 <- toy_data(50, seed = i + 1001)
+  preds_50 <- get_preds(h, test_50)
+  risk_50 <- calculate_risk(test_50$y, preds_50)
+  risk_mean <- mean(risk_50)
+  risk_std <- sd(risk_50) / sqrt(length(risk_50))
+  risks_test_set[i, "mean_risk"] <- risk_mean
+  risks_test_set[i, "std_risk"] <- risk_std
+}
+
+risks_test_set$"risk_diff" <- risks_test_set$mean_risk - risk_dgp
+lower_bound <- risks_test_set$mean_risk - 1.96 * risks_test_set$std_risk
+upper_bound <- risks_test_set$mean_risk + 1.96 * risks_test_set$std_risk
+
+risks_test_set$contains_true_risk <- (lower_bound <= risk_dgp) & 
+                                      (risk_dgp <= upper_bound)
+
+
+```
+
+```{r plot_test_set_var, echo=FALSE, fig.dim=c(2.5,2.5)}
+library(ggplot2)
+ggplot(risks_test_set, aes(x = risk_diff)) +
+geom_density(color = "black") +
+labs(x = "est_risk - true_risk", y = "density")
+
+
+```
+
+```{r calc_est, echo=FALSE}
+true_risk_proxy <- risk_dgp
+mean_diff <- mean(risks_test_set$"risk_diff")
+median_std_error <- median(risks_test_set$std_risk)
+percentage_95CI <- mean(risks_test_set$contains_true_risk) * 100
+```
+
+```{r test_set_var_show, echo=FALSE}
+
+sprintf("## True risk proxy: %.4f", round(true_risk_proxy, 4))
+sprintf("## Mean difference: %.4f", round(mean_diff, 4))
+sprintf("## 0.5-0.5 baseline true risk: %.4f", round(predictor_50_50, 4))
+sprintf("## Median standard error: %.4f", round(median_std_error, 4))
+sprintf("## Percentage of 95CI that contain the true risk proxy: %.1f", round(percentage_95CI, 4))
+
+```
+When using holdout estimation, in average the estimator is unbiased which can be noticed from the
+small bias value (`est_risk - true_risk`).
+From the pdf estimate, we can see that the errors are skewed to the right, which means that the risk is underestimated.
+In practice, this means that our estimates will largely depend on our test set (especially if the test set is small).
+In our case the model performs better that the baseline, however the median standard error is also large.
+With increasing training set size, the estimated model will get close to the optimal attainable *h*, and the risk decrease. 
+Smaller train set can easily be impacted by outliers and yield a suboptimal model.
+A smaller test set would introduce a larger variance in the estimations, while with a larger data set we would decrease the standard error.
+
+## Overestimation of the deployed model's risk
+
+
+```{r overestimation, echo=FALSE}
+
+risk_differences <- c()
+for (i in 1:50) {
+  dataset1 <- toy_data(50, seed = i)
+  dataset2 <- toy_data(50, seed = i*100)
+  combined_dataset <- rbind(dataset1, dataset2)
+  h1 <- glm(y ~ ., data = dataset1, family = binomial(link = "logit"))
+  h2 <- glm(y ~ ., data = combined_dataset, family = binomial(link = "logit"))
+  true_risk_h1 <- get_dgp_risk(h1)
+  true_risk_h2 <- get_dgp_risk(h2)
+  
+  true_risk_h1 <- mean(true_risk_h1)
+  true_risk_h2 <- mean(true_risk_h2)
+
+  r <- true_risk_h1 - true_risk_h2
+  risk_differences[i] <- r
+}
+```
+
+```{r overestimation_print, echo=FALSE}
+print("Summary of true risk h1 - true risk h2:")
+summary(risk_differences)
+
+
+```
+
+We overestimate risk by using holdout estimation because the model only uses a portion of the data for training.
+With larger dataset set size, these differences will become smaller because we have more data to learn and test on.
+
+
+
+## Loss estimator variability due to split variability
+
+```{r split_variability, echo=FALSE, warning=FALSE}
+dataset <- toy_data(100, seed=2)
+h0 <- glm(y ~ ., data = dataset, family = binomial(link = "logit"))
+# true_risk_h0 <- get_dgp_risk(h0)
+h0_preds <- get_preds(h0, dataset)
+true_risk_h0 <- log_loss(dataset$y, h0_preds)
+
+true_risk_h0 <- mean(true_risk_h0)
+true_risk_h0
+
+risk_estimates <- data.frame(risk_estimate = numeric(1000), std_risk = numeric(1000))
+
+for (i in 1:1000) {
+  dataset_split <- holdout_split(dataset, 0.5, seed = i)
+  h <- glm(y ~ ., data = dataset_split$train, family = binomial(link = "logit"))
+  test_preds <- get_preds(h, dataset_split$test)
+  risk_test <- log_loss(dataset_split$test$y, test_preds)
+  risk_test_mean <- mean(risk_test)
+
+  risk_std <- sd(risk_test) / sqrt(length(risk_test))
+  risk_estimates[i, "risk_estimate"] <- risk_test_mean
+  risk_estimates[i, "std_risk"] <- risk_std
+}
+
+risk_estimates$"risk_diff" <- risk_estimates$risk_estimate - true_risk_h0
+lower_bound <- risk_estimates$risk_estimate - 1.96 * risk_estimates$std_risk
+upper_bound <- risk_estimates$risk_estimate + 1.96 * risk_estimates$std_risk
+risk_estimates$contains_true_risk <- (lower_bound <= true_risk_h0) & 
+                                      (true_risk_h0 <= upper_bound)
+
+sprintf("True risk proxy: %.4f", true_risk_h0)
+sprintf("Mean difference: %.4f", mean(risk_estimates$risk_diff))
+sprintf("Median standard error: %.4f", median(risk_estimates$std_risk))
+sprintf("Percentage of 95CI that contain the true risk proxy: %.2f", mean(risk_estimates$contains_true_risk) * 100)
+
+```
+
+
+```{r plot_split_variability, echo=FALSE, warning = FALSE, fig.dim=c(2.5,2.5)}
+ggplot(risk_estimates, aes(x = risk_diff)) +
+geom_density(color = "black") +
+labs(x = "est_risk - true_risk", y = "density")
+
+```
+
+From the statistics and the density estimation we can see that there is a large positive bias (skewness of the risk difference distribution).
+This is because the model only uses half of the data for training. In addition, the dataset is small and different splits introduce variance in the model learning and loss estimation procedure.
+Both variance and bias would decrease if the dataset was larger. Smaller dataset will increase the bias and variance.
+Larger training data will decrease bias, however the variance when estimating risk on the test set will be larger.
+Larger testing data will decrease variance.
+
+
+
+```{r cross_validation_function, echo=FALSE, warning=FALSE}
+cross_validation_splits <- function(dataset, k=5, seed=NULL) {
+  set.seed(seed)
+  n <- nrow(dataset)
+  indices <- sample(1:n, n, replace = FALSE)
+  folds <- cut(indices, breaks = k, labels = FALSE)
+  return(folds)
+}
+
+cross_validation <- function(dataset, k=5, seed=NULL) {
+  folds <- cross_validation_splits(dataset, k, seed)
+  risks_folds <- c()
+  risks_per_instance <- c()
+  for (i in 1:k) {
+    test_indices <- which(folds == i)
+    train_indices <- setdiff(1:length(folds), test_indices)
+    train <- dataset[train_indices, ]
+    test <- dataset[test_indices, ]
+    h <- glm(y ~ ., data = train, family = binomial(link = "logit"))
+    preds <- get_preds(h, test)
+    risk <- calculate_risk(test$y, preds)
+    risks_folds <- c(risks_folds, mean(risk))
+    risks_per_instance[test_indices] <- risk
+  }
+  mean_risk_folds <- mean(risks_folds)
+  return (list(mean_risk_folds = mean_risk_folds, std_cv= sd(risks_per_instance) / sqrt(length(risks_per_instance)),
+               all_risks = risks_per_instance))
+}
+
+cross_validation_leave_one_out <- function(dataset) {
+  n <- nrow(dataset)
+  risk_all <- c()
+  for (i in 1:n) {
+    test_indices <- i
+    train_indices <- setdiff(1:n, test_indices)
+    train <- dataset[train_indices, ]
+    test <- dataset[test_indices, ]
+    h <- glm(y ~ ., data = train, family = binomial(link = "logit"))
+    preds <- get_preds(h, test)
+    risk_all[i] <- calculate_risk(test$y, preds)
+  }
+  return(list(mean_risk_folds = mean(risk_all), std_cv=sd(risk_all) / sqrt(length(risk_all))))
+}
+
+repeated_cross_validation <- function(dataset, k=5, n_repeats=10, seed=NULL) {
+  risks_mean <- c()
+  risks_per_instance <- vector("numeric", length = nrow(dataset))
+  for (i in 1:n_repeats) {
+    risk <- cross_validation(dataset, k, seed = seed + i)
+    risks_mean[i] <- risk$mean_risk_folds
+    risks_per_instance <- risks_per_instance + risk$all_risks
+  }
+  risks_per_instance <- risks_per_instance / n_repeats
+
+  return(list(mean_risk_folds = mean(risks_per_instance), 
+              # std_cv = sd(risks_mean) / sqrt(length(risks_mean)),
+              std_cv = sd(risks_per_instance) / sqrt(length(risks_per_instance))))
+}
+
+
+run_cv_estimate_risk <- function(folds, iterations, repeated = FALSE, seed = NULL) {
+  risks_cv_results <- data.frame()
+  for (i in 1:iterations) {
+    dataset <- toy_data(100, i)
+    h <- glm(y ~ ., data = dataset, family = binomial(link = "logit"))
+    true_risk_h0 <- get_dgp_risk(h)
+    true_risk_h0 <- mean(true_risk_h0)
+    if (folds == - 1) {
+      risk_estimate <- cross_validation_leave_one_out(dataset)
+    } 
+    else {
+      if (repeated) {
+        risk_estimate <- repeated_cross_validation(dataset, folds, 20, i+2000)
+      } 
+      else {
+        risk_estimate <- cross_validation(dataset, folds, i)
+      }
+    }
+
+    risks_cv_results[i, "risk_estimate"] <- risk_estimate$mean_risk_folds
+    risks_cv_results[i, "risk_diff"] <- risk_estimate$mean_risk_folds - true_risk_h0
+    risks_cv_results[i, "true_risk"] <- true_risk_h0
+    risks_cv_results[i, "std_cv"] <- risk_estimate$std_cv
+    lower_bound <- risk_estimate$mean_risk_folds - 1.96 * risk_estimate$std_cv
+    upper_bound <- risk_estimate$mean_risk_folds + 1.96 * risk_estimate$std_cv
+    risks_cv_results[i, "contains_true_risk"] <- (lower_bound <= true_risk_h0) & 
+                                      (true_risk_h0 <= upper_bound)
+  }
+  return(risks_cv_results)
+}
+
+```
+
+## Cross validation
+
+```{r cross_validation_example, echo=FALSE, warning=FALSE, cache=TRUE}
+fold_2_cv <- run_cv_estimate_risk(2, 500)
+print("2-fold")
+sprintf("Mean difference: %.4f", mean(fold_2_cv$risk_diff))
+sprintf("Median standard error: %.4f", median(fold_2_cv$std_cv))
+sprintf("Percentage of 95CI that contain the true risk proxy: %.1f", mean(fold_2_cv$contains_true_risk) * 100)
+print("----------")
+```
+```{r cross_validation_example_4, echo=FALSE, warning=FALSE, cache=TRUE}
+fold_4_cv <- run_cv_estimate_risk(4, 500)
+print("4-fold")
+sprintf("Mean difference: %.4f", mean(fold_4_cv$risk_diff))
+sprintf("Median standard error: %.4f", median(fold_4_cv$std_cv))
+sprintf("Percentage of 95CI that contain the true risk proxy: %.1f", mean(fold_4_cv$contains_true_risk) * 100)
+print("----------")
+```
+
+```{r cross_validation_example_10, echo=FALSE, warning=FALSE, cache=TRUE}
+fold_10_cv <- run_cv_estimate_risk(10, 500)
+print("10-fold")
+sprintf("Mean difference: %.4f", mean(fold_10_cv$risk_diff))
+sprintf("Median standard error: %.4f", median(fold_10_cv$std_cv))
+sprintf("Percentage of 95CI that contain the true risk proxy: %.1f", mean(fold_10_cv$contains_true_risk) * 100)
+print("----------")
+```
+
+```{r cross_validation_example_10_20, echo=FALSE, warning=FALSE, cache=TRUE}
+fold_10_20_cv <- run_cv_estimate_risk(10, 500, TRUE, 1000)
+print("20 repeated 10 fold")
+sprintf("Mean difference: %.4f", mean(fold_10_20_cv$risk_diff))
+sprintf("Median standard error: %.4f", median(fold_10_20_cv$std_cv))
+sprintf("Percentage of 95CI that contain the true risk proxy: %.1f", mean(fold_10_20_cv$contains_true_risk) * 100)
+print("----------")
+```
+
+
+```{r cross_validation_example_llo, echo=FALSE, warning=FALSE, cache=TRUE}
+fold_loo_cv <- run_cv_estimate_risk(-1, 500)
+print("LOO")
+sprintf("Mean difference: %.4f", mean(fold_loo_cv$risk_diff))
+sprintf("Median standard error: %.4f", median(fold_loo_cv$std_cv))
+sprintf("Percentage of 95CI that contain the true risk proxy: %.1f", mean(fold_loo_cv$contains_true_risk) * 100)
+print("----------")
+```
+
+
+```{r plot_cv, echo=FALSE, message=FALSE, warning=FALSE, fig.dim=c(6,5)}
+
+library(gridExtra)
+library(dplyr)
+
+fold_2_cv$dataset <- "2-fold"
+fold_4_cv$dataset <- "4-fold"
+fold_10_cv$dataset <- "10-fold"
+fold_10_20_cv$dataset <- "10-fold-20-rep"
+fold_loo_cv$dataset <- "loocv"
+
+all_data <- bind_rows(fold_2_cv, fold_4_cv, fold_10_cv, fold_10_20_cv, fold_loo_cv)
+
+# Reorder levels of the dataset factor
+all_data$dataset <- factor(all_data$dataset, levels = c("2-fold", "4-fold", "10-fold", "10-fold-20-rep", "loocv"))
+
+# Determine common axis limits
+common_x_lim <- c(min(all_data$risk_diff), max(all_data$risk_diff))
+common_y_lim <- c(0, max(density(all_data$risk_diff)$y))
+
+# Plot all densities in one row with same axis dimensions
+ggplot(all_data, aes(x = risk_diff)) +
+  geom_density(color = "black") +
+  labs(x = "est_risk - true_risk", y = "density") +
+  facet_wrap(~ dataset, ncol = 5, scales = "fixed") +
+  xlim(common_x_lim) +
+  ylim(common_y_lim)
+```
+
+From the results that we got, using CV with bigger fold number will give us better estimates with lower variance. We achieved the best results with 10-fold CV, 20 times repeated 10-fold CV, and LOOCV.
+LOOCV in theory should give us the best results, however the main drawback is the long computation time. In case the model is unstable (very sensitive) to training data, the variance of the k-fold CV with also increase with k.
+It is important to note that because the dataset is small, the training sets that are small are also small can introduce outliers in the model risk estimates.
+
