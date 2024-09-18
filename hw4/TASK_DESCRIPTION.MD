@@ -4,3 +4,4 @@
 
 3. Apply ANN to the housing2r and housing3 data sets. For each data set, use one method developed in previous HWs for comparison.
 
+4. Apply your ANN to the data set from train.csv.gz, which groups instances in one of the nine groups. Build an accurate model and evaluate it. Also, report your runtimes. Create a file final.txt with predictions for test.csv.gz; all the code for building the final model and making predictions needs to be in a function create_final_predictions().
