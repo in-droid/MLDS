@@ -1,6 +1,6 @@
 # Machine Learning for Data Science (MLDS) course homeworks
 
-This repository contains homeworks I did as a part of the MLDS course. It contains python implementations of the most used ML algorithms and notebooks with R code for loss estimation and bayesian inference.
+This repository contains homeworks I did as a part of the MLDS course. It contains Python implementations of the most used ML algorithms and notebooks with R code for loss estimation and bayesian inference.
 
 ## Repository structute
 
